@@ -222,25 +222,6 @@ class OpenAITest:
 		assert "".join(chunks) == output
 
 
-
-
-	# async def test_extra_fields(self):
-	# 	try:
-	# 		await self.client.chat.completions.create(
-	# 			model=self.model_name,
-	# 			messages=[{
-	# 				"role": "system",
-	# 				"content": "You are a helpful assistant.",
-	# 				"extra_field": "0",
-	# 			}],  # type: ignore
-	# 			temperature=0,
-	# 			seed=0)
-	# 	except BadRequestError as e:
-	# 		assert "extra_forbidden" in e.message
-	# 	else:
-	# 		pytest.fail("DID NOT RAISE <class 'openai.BadRequestError'>")
-
-
 	async def test_complex_message_content(self):
 		resp = await self.client.chat.completions.create(
 			model=self.model_name,
@@ -265,8 +246,7 @@ class OpenAITest:
 			if name.startswith("test_") and callable(obj):
 				try:
 					await obj(self)
-					results[name] = "pass"
+					results[name] ={"status": "pass", "error": None}
 				except Exception as e:
-					results[name] = "fail"
-					results[name + "_error"] = str(e)
+					results[name] = {"status": "fail", "error": str(e)}
 		return results
