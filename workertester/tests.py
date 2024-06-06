@@ -240,6 +240,213 @@ class OpenAITest:
 		content = resp.choices[0].message.content
 		assert content == "2"
 
+	async def test_extra_fields(self):
+		try:
+			await self.client.chat.completions.create(
+				model=self.model_name,
+				messages=[{
+					"role": "system",
+					"content": "You are a helpful assistant.",
+					"extra_field": "0",
+				}],  # type: ignore
+				temperature=0,
+				seed=0)
+		except BadRequestError as e:
+			assert "extra_forbidden" in e.message
+
+	async def test_guided_choice_completion(self, guided_decoding_backend: str):
+		completion = await self.client.completions.create(
+			model=self.model_name,
+			prompt="The best language for type-safe systems programming is ",
+			n=2,
+			temperature=1.0,
+			max_tokens=10,
+			extra_body=dict(guided_choice=TEST_CHOICE,
+						guided_decoding_backend=guided_decoding_backend))
+
+		assert completion.id is not None
+		assert completion.choices is not None and len(completion.choices) == 2
+		for i in range(2):
+			assert completion.choices[i].text in TEST_CHOICE
+   
+	async def test_completion_streaming(self):
+		prompt = "What is an LLM?"
+
+		single_completion = await self.client.completions.create(
+			model=self.model_name,
+			prompt=prompt,
+			max_tokens=5,
+			temperature=0.0,
+		)
+		single_output = single_completion.choices[0].text
+		single_usage = single_completion.usage
+
+		stream = await self.client.completions.create(model=self.model_name,
+												 prompt=prompt,
+												 max_tokens=5,
+												 temperature=0.0,
+												 stream=True)
+		chunks = []
+		finish_reason_count = 0
+		async for chunk in stream:
+			chunks.append(chunk.choices[0].text)
+			if chunk.choices[0].finish_reason is not None:
+				finish_reason_count += 1
+		# finish reason should only return in last block
+		assert finish_reason_count == 1
+		assert chunk.choices[0].finish_reason == "length"
+		assert chunk.choices[0].text
+		assert chunk.usage == single_usage
+		assert "".join(chunks) == single_output
+    
+	async def test_batch_completions(self):
+		# test simple list
+		batch = await self.client.completions.create(
+			model=self.model_name,
+			prompt=["Hello, my name is", "Hello, my name is"],
+			max_tokens=5,
+			temperature=0.0,
+		)
+		assert len(batch.choices) == 2
+		assert batch.choices[0].text == batch.choices[1].text
+
+		# test n = 2
+		batch = await self.client.completions.create(
+			model=self.model_name,
+			prompt=["Hello, my name is", "Hello, my name is"],
+			n=2,
+			max_tokens=5,
+			temperature=0.0,
+			extra_body=dict(
+				# NOTE: this has to be true for n > 1 in vLLM, but not necessary
+				# for official client.
+				use_beam_search=True),
+		)
+		assert len(batch.choices) == 4
+		assert batch.choices[0].text != batch.choices[1].text, "beam search should be different"
+		assert batch.choices[0].text == batch.choices[2].text, "two copies of the same prompt should be the same"
+		assert batch.choices[1].text == batch.choices[3].text, "two copies of the same prompt should be the same"
+
+		# test streaming
+		batch = await self.client.completions.create(
+			model=self.model_name,
+			prompt=["Hello, my name is", "Hello, my name is"],
+			max_tokens=5,
+			temperature=0.0,
+			stream=True,
+		)
+		texts = [""] * 2
+		async for chunk in batch:
+			assert len(chunk.choices) == 1
+			choice = chunk.choices[0]
+			texts[choice.index] += choice.text
+		assert texts[0] == texts[1]
+    
+    
+    
+	# async def test_long_seed(self):
+	# 	for seed in [
+	# 			torch.iinfo(torch.long).min - 1,
+	# 			torch.iinfo(torch.long).max + 1
+	# 	]:
+	# 		with pytest.raises(BadRequestError) as exc_info:
+	# 			await self.client.chat.completions.create(
+	# 				model=self.model_name,
+	# 				messages=[{
+	# 					"role": "system",
+	# 					"content": "You are a helpful assistant.",
+	# 				}],
+	# 				temperature=0,
+	# 				seed=seed
+	# 			)
+	# 		assert ("greater_than_equal" in exc_info.value.message
+	# 				or "less_than_equal" in exc_info.value.message)
+
+
+	async def test_guided_decoding_type_error(self):
+		guided_decoding_backends = ["outlines", "lm-format-enforcer"]
+
+		for guided_decoding_backend in guided_decoding_backends:
+			try:
+				await self.client.completions.create(
+					model=self.model_name,
+					prompt="Give an example JSON that fits this schema: 42",
+					extra_body=dict(guided_json=42, guided_decoding_backend=guided_decoding_backend)
+				)
+			except BadRequestError:
+				pass
+			else:
+				raise AssertionError("BadRequestError was not raised for guided_decoding_backend: " + guided_decoding_backend)
+
+		messages = [
+			{"role": "system", "content": "you are a helpful assistant"},
+			{"role": "user", "content": "The best language for type-safe systems programming is "}
+		]
+
+		try:
+			await self.client.chat.completions.create(
+				model=self.model_name,
+				messages=messages,
+				extra_body=dict(guided_regex={1: "Python", 2: "C++"})
+			)
+		except BadRequestError:
+			pass
+		else:
+			raise AssertionError("BadRequestError was not raised for guided_regex with messages")
+
+		try:
+			await self.client.completions.create(
+				model=self.model_name,			prompt="Give an example string that fits this regex",
+				extra_body=dict(guided_regex=TEST_REGEX, guided_json=TEST_SCHEMA)
+			)
+		except BadRequestError:
+			pass
+		else:
+			raise AssertionError("BadRequestError was not raised for guided_regex with prompt and schema")
+ 
+	async def test_custom_role(self):
+		# Not sure how the model handles custom roles so we just check that
+		# both string and complex message content are handled in the same way
+
+		resp1 = await self.client.chat.completions.create(
+			model=self.model_name,
+			messages=[{
+				"role": "my-custom-role",
+				"content": "what is 1+1?",
+			}],  # type: ignore
+			temperature=0,
+			seed=0)
+
+		resp2 = await self.client.chat.completions.create(
+			model=self.model_name,
+			messages=[{
+				"role": "my-custom-role",
+				"content": [{
+					"type": "text",
+					"text": "what is 1+1?"
+				}]
+			}],  # type: ignore
+			temperature=0,
+			seed=0)
+
+		content1 = resp1.choices[0].message.content
+		content2 = resp2.choices[0].message.content
+		assert content1 == content2
+ 
+	async def test_zero_logprobs(self):
+		# test using token IDs
+		completion = await self.client.completions.create(
+			model=self.model_name,
+			prompt=[0, 0, 0, 0, 0],
+			max_tokens=5,
+			temperature=0.0,
+			logprobs=0,
+		)
+		choice = completion.choices[0]
+		assert choice.logprobs is not None
+		assert choice.logprobs.token_logprobs is not None
+		assert choice.logprobs.top_logprobs is None
+ 
 	async def run_tests(self):
 		results = {}
 		for name, obj in self.__class__.__dict__.items():
@@ -250,3 +457,6 @@ class OpenAITest:
 				except Exception as e:
 					results[name] = {"status": "fail", "error": str(e)}
 		return results
+	
+ 
+	

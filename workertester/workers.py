@@ -2,6 +2,7 @@ from typing import Dict, Any
 import runpod
 from config import vLLMWorkerConfig
 from datetime import datetime
+import requests
 
 class RunPodTemplate:
     def __init__(self, name: str, image_name: str, env: Dict[str, str], container_disk_in_gb: int):
@@ -47,23 +48,24 @@ class vLLMWorker:
                 env=self.env,
                 container_disk_in_gb=self.container_disk_in_gb,
             )
+            print(f"Created template {self.name}")
         except Exception as e:
-            if "must be unique" in str(e):
-                
+            if "must be unique" in str(e) or "Please try again" in str(e):
                 try:
                     runpod.delete_template(self.name)
-                except Exception as e:
-                    if "associated" in str(e):
-                        runpod.delete_endpoint(str(e).split()[-1])
-                except Exception as e:
-                    print(f"Failed to delete template: {e}")
-                    
-                self.template = RunPodTemplate(
-                    name=self.name,
-                    image_name=self.image_name,
-                    env=self.env,
-                    container_disk_in_gb=self.container_disk_in_gb,
-                )
+                except Exception as delete_e:
+                    if "associated" in str(delete_e):
+                        runpod.delete_endpoint(str(delete_e).split()[-1])
+                        print(f"Deleted endpoint {str(delete_e).split()[-1]}")
+                    else:
+                        print(f"Failed to delete template: {delete_e}")
+                finally:
+                    self.template = RunPodTemplate(
+                        name=self.name,
+                        image_name=self.image_name,
+                        env=self.env,
+                        container_disk_in_gb=self.container_disk_in_gb,
+                    )
             elif "associated" in str(e):
                 print(f"Template {self.name} is associated with an endpoint. Deleting endpoint.")
                 runpod.delete_endpoint(str(e).split()[-1])
@@ -75,9 +77,8 @@ class vLLMWorker:
                     container_disk_in_gb=self.container_disk_in_gb,
                 )
             else:
-                print
+                print(f"Unhandled exception: {e}")
                 raise e
-            
 
         self.endpoint_id = runpod.create_endpoint(**vLLMWorkerConfig(
             name=self.name,
@@ -85,21 +86,26 @@ class vLLMWorker:
             gpu_ids=self.gpu_ids,
         ).model_dump())["id"]
         self.runpod_endpoint = runpod.Endpoint(self.endpoint_id)
-        
         self.openai_base_url = f"{self.url_prefix}/{self.endpoint_id}/openai/v1"
+
         
+
+    # Delete the endpoint using the GraphQL API (TODO: Add a method to delete the endpoint using the SDK)
     def delete(self):
+        url = f"https://api.runpod.io/graphql?api_key={self.api_key}"
+        headers = {
+            'content-type': 'application/json'
+        }
+        data = {
+            "query": f"mutation {{ deleteEndpoint(id: \"{self.endpoint_id}\") }}"
+        }
         try:
-            runpod.delete_endpoint(self.endpoint_id)
+            response = requests.post(url, headers=headers, json=data)
+            if response.status_code == 200:
+                print("Endpoint deleted successfully.")
+            else:
+                print("Failed to delete endpoint.")
         except Exception as e:
             print(f"Failed to delete endpoint: {e}")
-            
-        
-        if self.template is not None:
-            try:
-                self.template.delete()
-            except Exception as e:
-                print(f"Failed to delete template: {e}")
-                runpod.delete_template(self.template.name)
         
 
