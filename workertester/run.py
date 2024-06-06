@@ -8,6 +8,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from tests import OpenAITest
 from time import sleep
+import json
 
 
 GPUS = ["ADA_24"]
@@ -87,6 +88,7 @@ async def main():
                 worker.delete()
             except Exception as e:
                 print(f"Seems Like test worker is already created, Delete the worker from the UI and Try Again")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
